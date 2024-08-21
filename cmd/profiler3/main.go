@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"strconv"
 	"syscall"
 	"time"
 	"unsafe"
@@ -27,7 +28,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cflags $BPF_CFLAGS -cc clang-13 ParcaAgent ../profiler/bpf/parca-agent.bpf.c -- -I../../headers
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cflags $BPF_CFLAGS -cc clang ParcaAgent ../profiler/bpf/parca-agent.bpf.c -- -I../../headers
 
 // stackDepth is the max depth of each stack trace to track.
 // as defined in BPF C program, i.e., MAX_STACK_DEPTH constant.
@@ -62,6 +63,21 @@ func main() {
 	for _, m := range mm {
 		fmt.Printf("start=0x%x limit=0x%x offset=0x%x %s\n", m.Start, m.Limit, m.Offset, m.File)
 	}
+	// List all threads of the process.
+	tasks, err := os.ReadDir(fmt.Sprintf("/proc/%d/task", *pid))
+	if err != nil {
+		log.Printf("failed to list threads of the process: %v", err)
+		return
+	}
+	tids := make([]int, len(tasks))
+	for i, t := range tasks {
+		if !t.IsDir() {
+			log.Printf("unexpected file in /proc/PID/task: %s", t.Name())
+			return
+		}
+		tids[i], err = strconv.Atoi(t.Name())
+	}
+	log.Printf("Found all pids: %v\n", tids)
 
 	// Increase the resource limit of the current process to provide sufficient space
 	// for locking memory for the BPF maps.
@@ -81,73 +97,82 @@ func main() {
 	}
 	defer objs.Close()
 
-	for cpu := 0; cpu < runtime.NumCPU(); cpu++ {
-		fd, err := unix.PerfEventOpen(
-			&unix.PerfEventAttr{
-				// PERF_TYPE_SOFTWARE event type indicates that
-				// we are measuring software events provided by the kernel.
-				Type: unix.PERF_TYPE_SOFTWARE,
-				// Config is a Type-specific configuration.
-				// PERF_COUNT_SW_CPU_CLOCK reports the CPU clock, a high-resolution per-CPU timer.
-				Config: unix.PERF_COUNT_SW_CPU_CLOCK,
-				// Size of attribute structure for forward/backward compatibility.
-				Size: uint32(unsafe.Sizeof(unix.PerfEventAttr{})),
-				// Sample could mean sampling period (expressed as the number of occurrences of an event)
-				// or frequency (the average rate of samples per second).
-				// See https://perf.wiki.kernel.org/index.php/Tutorial#Period_and_rate.
-				// In order to use frequency PerfBitFreq flag is set below.
-				// The kernel will adjust the sampling period to try and achieve the desired rate.
-				Sample: 100,
-				Bits:   unix.PerfBitDisabled | unix.PerfBitFreq,
-			},
-			*pid,
-			cpu,
-			// groupFd argument allows event groups to be created.
-			// A single event on its own is created with groupFd = -1
-			// and is considered to be a group with only 1 member.
-			-1,
-			// PERF_FLAG_FD_CLOEXEC flag enables the close-on-exec flag for the created
-			// event file descriptor, so that the file descriptor is
-			// automatically closed on execve(2).
-			unix.PERF_FLAG_FD_CLOEXEC,
-		)
-		if err != nil {
-			log.Printf("failed to open the perf event: %v", err)
-			return
-		}
-		defer func(fd int) {
-			if err = unix.Close(fd); err != nil {
-				log.Printf("failed to close the perf event: %v", err)
-			}
-		}(fd)
-
-		// Attach the BPF program to the perf event.
-		err = unix.IoctlSetInt(
-			fd,
-			unix.PERF_EVENT_IOC_SET_BPF,
-			// This BPF program file descriptor was created by a previous bpf(2) system call.
-			objs.ParcaAgentPrograms.DoSample.FD(),
-		)
-		if err != nil {
-			log.Printf("failed to attach BPF program to perf event: %v", err)
-			return
-		}
-
-		// PERF_EVENT_IOC_ENABLE enables the individual event or
-		// event group specified by the file descriptor argument.
-		err = unix.IoctlSetInt(fd, unix.PERF_EVENT_IOC_ENABLE, 0)
-		if err != nil {
-			log.Printf("failed to enable the perf event: %v", err)
-			return
-		}
-		// PERF_EVENT_IOC_DISABLE disables the individual counter or
-		// event group specified by the file descriptor argument.
-		defer func(fd int) {
-			err = unix.IoctlSetInt(fd, unix.PERF_EVENT_IOC_DISABLE, 0)
+	for _, pid := range tids {
+		for cpu := 0; cpu < runtime.NumCPU(); cpu++ {
+			fd, err := unix.PerfEventOpen(
+				&unix.PerfEventAttr{
+					// PERF_TYPE_SOFTWARE event type indicates that
+					// we are measuring software events provided by the kernel.
+					Type: unix.PERF_TYPE_SOFTWARE,
+					// Config is a Type-specific configuration.
+					// PERF_COUNT_SW_CPU_CLOCK reports the CPU clock, a high-resolution per-CPU timer.
+					Config: unix.PERF_COUNT_SW_CPU_CLOCK,
+					// Size of attribute structure for forward/backward compatibility.
+					Size: uint32(unsafe.Sizeof(unix.PerfEventAttr{})),
+					// Sample could mean sampling period (expressed as the number of occurrences of an event)
+					// or frequency (the average rate of samples per second).
+					// See https://perf.wiki.kernel.org/index.php/Tutorial#Period_and_rate.
+					// In order to use frequency PerfBitFreq flag is set below.
+					// The kernel will adjust the sampling period to try and achieve the desired rate.
+					Sample: 99,
+					//Sample_type: unix.PERF_SAMPLE_IP|unix.PERF_SAMPLE_TID|unix.PERF_SAMPLE_TIME|unix.PERF_SAMPLE_ID|unix.PERF_SAMPLE_PERIOD|unix.PERF_SAMPLE_CALLCHAIN,
+					Bits:   unix.PerfBitDisabled | unix.PerfBitFreq,
+				},
+				pid,
+				cpu,
+				// groupFd argument allows event groups to be created.
+				// A single event on its own is created with groupFd = -1
+				// and is considered to be a group with only 1 member.
+				-1,
+				// PERF_FLAG_FD_CLOEXEC flag enables the close-on-exec flag for the created
+				// event file descriptor, so that the file descriptor is
+				// automatically closed on execve(2).
+				unix.PERF_FLAG_FD_CLOEXEC,
+			)
+			fmt.Printf("cpu=%d\n", cpu)
 			if err != nil {
-				log.Printf("failed to disable the perf event: %v", err)
+				log.Printf("failed to open the perf event: %v", err)
+				return
 			}
-		}(fd)
+			defer func(fd int) {
+				if err = unix.Close(fd); err != nil {
+					log.Printf("failed to close the perf event: %v", err)
+				}
+			}(fd)
+
+			// Attach the BPF program to the perf event.
+			err = unix.IoctlSetInt(
+				fd,
+				unix.PERF_EVENT_IOC_SET_BPF,
+				// This BPF program file descriptor was created by a previous bpf(2) system call.
+				objs.ParcaAgentPrograms.DoSample.FD(),
+			)
+			if err != nil {
+				log.Printf("failed to attach BPF program to perf event: %v", err)
+				return
+			}
+			err = unix.IoctlSetInt(fd, unix.PERF_EVENT_IOC_RESET, 0)
+                        if err != nil {
+                                log.Printf("failed to enable the perf event: %v", err)
+                                return
+                        }
+
+			// PERF_EVENT_IOC_ENABLE enables the individual event or
+			// event group specified by the file descriptor argument.
+			err = unix.IoctlSetInt(fd, unix.PERF_EVENT_IOC_ENABLE, 0)
+			if err != nil {
+				log.Printf("failed to enable the perf event: %v", err)
+				return
+			}
+			// PERF_EVENT_IOC_DISABLE disables the individual counter or
+			// event group specified by the file descriptor argument.
+			defer func(fd int) {
+				err = unix.IoctlSetInt(fd, unix.PERF_EVENT_IOC_DISABLE, 0)
+				if err != nil {
+					log.Printf("failed to disable the perf event: %v", err)
+				}
+			}(fd)
+		}
 	}
 
 	sig := make(chan os.Signal, 1)
@@ -209,7 +234,7 @@ func newProfile(profilingDuration time.Duration) *profile.Profile {
 		// Period is the number of events between sampled occurrences.
 		// We sample at 100Hz (100 times per second),
 		// which is every 0.01s or 10 million nanoseconds.
-		Period: 10000000,
+		Period: 99,
 	}
 
 	return &prof
@@ -243,9 +268,15 @@ func fillProfile(counts, stackTraces *ebpf.Map, prof *profile.Profile, pid int, 
 
 		key  stackCountKey
 		seen uint64
+		samples uint64
 	)
 	for it.Next(&key, &seen) {
 		fmt.Printf("%+v seen %d times\n", key, seen)
+		if seen >0 {
+			samples += seen
+		} else {
+			samples += 1
+		}
 
 		stackBytes, err := stackTraces.LookupBytes(key.UserStackID)
 		if err != nil {
@@ -324,12 +355,14 @@ func fillProfile(counts, stackTraces *ebpf.Map, prof *profile.Profile, pid int, 
 	if err := it.Err(); err != nil {
 		log.Printf("failed to read from Counts map: %v", err)
 	}
+	log.Printf("Wrote %d samples\n", samples)
 
 	// Mappings in pprof must have IDs and need to start with 1.
 	for i, m := range mm {
 		m.ID = uint64(i + 1)
 	}
 	prof.Mapping = mm
+
 }
 
 // Look up a mapping for the given memory address

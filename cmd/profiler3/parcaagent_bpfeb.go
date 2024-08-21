@@ -28,9 +28,9 @@ func LoadParcaAgent() (*ebpf.CollectionSpec, error) {
 //
 // The following types are suitable as obj argument:
 //
-//     *ParcaAgentObjects
-//     *ParcaAgentPrograms
-//     *ParcaAgentMaps
+//	*ParcaAgentObjects
+//	*ParcaAgentPrograms
+//	*ParcaAgentMaps
 //
 // See ebpf.CollectionSpec.LoadAndAssign documentation for details.
 func LoadParcaAgentObjects(obj interface{}, opts *ebpf.CollectionOptions) error {
@@ -118,5 +118,6 @@ func _ParcaAgentClose(closers ...io.Closer) error {
 }
 
 // Do not access this directly.
+//
 //go:embed parcaagent_bpfeb.o
 var _ParcaAgentBytes []byte

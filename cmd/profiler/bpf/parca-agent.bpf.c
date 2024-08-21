@@ -30,7 +30,7 @@
 #endif
 
 // Max amount of different stack trace addresses to buffer in the map.
-#define MAX_STACK_ADDRESSES 1024
+#define MAX_STACK_ADDRESSES 10240
 // Max depth of each stack trace to track.
 #define MAX_STACK_DEPTH 127
 // Stack trace value is 1 big byte array of the stack addresses.
@@ -67,6 +67,11 @@ int do_sample(struct bpf_perf_event_data *ctx) {
   u32 tgid = id >> 32;
   u32 pid = id;
 
+  const char fmt_str[] = "Hello, world, from BPF! My PID is %d and my TGID is %d\n";
+ bpf_trace_printk(fmt_str, sizeof(fmt_str), pid, tgid);
+ //
+ const char err_fmt[] = "bpf_get_stackid returned an error code: %d\n";
+
   if (pid == 0)
     return 0;
 
@@ -76,8 +81,13 @@ int do_sample(struct bpf_perf_event_data *ctx) {
   // The positive or null stack id is returned on success,
   // or a negative error in case of failure.
   key.user_stack_id = bpf_get_stackid(ctx, &stack_traces, BPF_F_USER_STACK);
+
+  if (key.user_stack_id < 0) {
+	bpf_trace_printk(err_fmt, sizeof(err_fmt), key.user_stack_id);
+  }
   // Read kernel-space stack ID and insert memory addresses into stack_traces map.
-  key.kernel_stack_id = bpf_get_stackid(ctx, &stack_traces, 0);
+  //key.kernel_stack_id = bpf_get_stackid(ctx, &stack_traces, 0);
+  key.kernel_stack_id = -1;
 
   u64 zero = 0;
   u64 *seen;

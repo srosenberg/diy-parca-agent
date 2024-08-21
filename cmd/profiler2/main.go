@@ -28,7 +28,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cflags $BPF_CFLAGS -cc clang-13 ParcaAgent ../profiler/bpf/parca-agent.bpf.c -- -I../../headers
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cflags $BPF_CFLAGS -cc clang ParcaAgent ../profiler/bpf/parca-agent.bpf.c -- -I../../headers
 
 // stackDepth is the max depth of each stack trace to track.
 // as defined in BPF C program, i.e., MAX_STACK_DEPTH constant.
